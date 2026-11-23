@@ -49,6 +49,13 @@ Not copied (extension-host / APK-parsing / analytics, not needed here):
    - `findBreakpointLocation()` → `findBreakpointLocations()`: returns **all**
      deduplicated matches; `initialiseBreakpoint`/`_onClassPrepared` register
      every location (lambdas and `Foo`/`FooKt` pairs share source lines).
+   - `initialiseBreakpoint()` refreshes the loaded-class cache with a one-shot
+     `AllClassesWithGeneric` query when no watched class matches (adelphes #139):
+     classes loaded between attach and a late `setBreakpoints` never fired a
+     classPrepare watch — watches start per-package only when a breakpoint for
+     that package is first set — so the upstream cache-only lookup wrongly
+     reported `notloaded` forever. Without a refresh the breakpoint still falls
+     back to the classPrepare watch as before.
    - breakpoint hit lookup matches any registered request id;
      `disableBreakpoints()` clears every JDWP request of a breakpoint.
 

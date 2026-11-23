@@ -516,6 +516,22 @@ class Debugger extends EventEmitter {
         // zed-android delta: register every matching runtime location, not just the first
         let bplocs = Debugger.findBreakpointLocations(classes, bp);
         if (!bplocs.length) {
+            // zed-android delta (adelphes #139): classes loaded between attach and
+            // this request never fired a classPrepare watch (watches start per-breakpoint),
+            // so the cache can be stale. Ask the runtime for its full loaded-class
+            // list once, then retry before declaring notloaded.
+            const all = await this.getAllClasses();
+            for (const x of all) {
+                this.session.loadedClasses.add(x.signature);
+            }
+            classes = await Promise.all(
+                [...this.session.loadedClasses]
+                    .filter(signature => bp.sigpattern.test(signature))
+                    .map(signature => this.loadClassInfo(signature))
+            );
+            bplocs = Debugger.findBreakpointLocations(classes, bp);
+        }
+        if (!bplocs.length) {
             // we couldn't identify a matching location - either the class is not yet loaded or the
             // location doesn't correspond to any code. In case it's the former, make sure we are notified
             // when classes in this package are loaded
