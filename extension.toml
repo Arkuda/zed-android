@@ -1,0 +1,10 @@
+id = "zed-android"
+version = "0.1.0"
+name = "Android"
+description = "Android integration for Gradle Android projects: AVD start, application/variant selection, build, run and JDWP debugging through an external zed-android CLI."
+authors = ["Andrey <andrey@localhost>"]
+repository = "https://github.com/phosphor-corp/zed-android"
+schema_version = 1
+
+[debug_adapters.Android]
+schema_path = "debug_adapter_schemas/Android.json"

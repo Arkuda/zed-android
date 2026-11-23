@@ -1,0 +1,20 @@
+{
+  "title": "Android debug adapter configuration schema",
+  "type": "object",
+  "properties": {
+    "label": {
+      "description": "Human readable name of the debug scenario.",
+      "type": "string"
+    },
+    "adapter": {
+      "description": "Debug adapter to use; must be Android for this schema.",
+      "const": "Android"
+    },
+    "request": {
+      "description": "The Android adapter always launches: it builds, installs and starts the selected variant on the selected device under the debugger.",
+      "enum": ["launch"]
+    }
+  },
+  "required": ["request"],
+  "additionalProperties": true
+}

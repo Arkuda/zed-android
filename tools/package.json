@@ -1,0 +1,21 @@
+{
+  "name": "zed-android-tools",
+  "version": "0.1.0",
+  "description": "CLI backend for the Zed Android integration: AVD control, Gradle target discovery/build/deploy and JDWP debugging over DAP.",
+  "license": "MIT",
+  "bin": {
+    "zed-android": "bin/zed-android.cjs"
+  },
+  "main": "lib/cli.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@vscode/debugadapter": "1.68.0",
+    "cross-spawn": "7.0.6",
+    "jsonc-parser": "3.3.1"
+  }
+}

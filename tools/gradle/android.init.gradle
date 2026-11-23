@@ -1,0 +1,197 @@
+// zed-android external init script, attached with --init-script per invocation.
+// It is never copied into the user's project and never registered in
+// ~/.gradle/init.d. Two modes:
+//   discovery (:zedAndroidTargets)  -> one JSON line listing real app/variant pairs
+//   guarded build/deploy (-PzedAndroidModule/-PzedAndroidVariant) -> exact pair check
+import groovy.json.JsonOutput
+
+final String TARGETS_MARKER = 'ZED_ANDROID_TARGETS:'
+final String VARIANT_MARKER = 'ZED_ANDROID_VARIANT:'
+
+def wantModule = gradle.startParameter.projectProperties['zedAndroidModule']
+def wantVariant = gradle.startParameter.projectProperties['zedAndroidVariant']
+def wantAppId = gradle.startParameter.projectProperties['zedAndroidApplicationId']
+
+boolean discoveryRequested = gradle.startParameter.taskRequests.any { req ->
+    req.args.any { it == ':zedAndroidTargets' || it == 'zedAndroidTargets' }
+}
+
+// Synchronized because parallel project evaluation can add concurrently.
+def appEntries = Collections.synchronizedList([])
+def libraryVariants = Collections.synchronizedList([])
+
+String describeTaskName(String variantName) {
+    return "zedAndroidDescribe${variantName[0].toUpperCase()}${variantName.substring(1)}"
+}
+
+gradle.beforeProject { project ->
+    def pluginManager = project.pluginManager
+
+    pluginManager.withPlugin('com.android.application') {
+        def androidComponents = project.extensions.getByName('androidComponents')
+
+        // This AGP build only exposes the two-argument overload; pick all
+        // variants via a selector and coerce to Action (Function1 ambiguity).
+        androidComponents.onVariants(androidComponents.selector().all(), { variant ->
+            def variantName = variant.name
+            def appIdProvider = variant.applicationId
+            def buildTypeName = variant.buildType
+            def javaSources = variant.sources?.java?.all
+            def kotlinSources = variant.sources?.kotlin?.all
+            def runtimeCfgName = variant.runtimeConfiguration.name
+
+            // Component.debuggable reflects the effective flag of the actual build
+            // type from the Android DSL; never infer it from the variant name.
+            boolean debuggable = variant.debuggable
+
+            appEntries << [
+                module       : project.path,
+                variant      : variantName,
+                applicationId: appIdProvider.get(),
+                debuggable   : debuggable,
+            ]
+
+            // The describe task exists only for the exact pair a command asked for.
+            if (!discoveryRequested && project.path == wantModule && variantName == wantVariant) {
+                project.tasks.register(describeTaskName(variantName)) { t ->
+                    t.group = 'zed-android'
+                    t.description = "zed-android: describe ${project.path}:${variantName} for the debugger"
+                    t.doLast {
+                        // Source roots of the variant plus every resolved *project*
+                        // dependency whose published variant matches (libraries of
+                        // the app may themselves depend on libraries).
+                        def cfg = project.configurations.findByName(runtimeCfgName)
+                        def depRoots = []
+                        if (cfg != null) {
+                            try {
+                                def graphRoot = cfg.incoming.resolutionResult.root
+                                def visited = new HashSet()
+                                def queue = [graphRoot]
+                                while (!queue.isEmpty()) {
+                                    def comp = queue.remove(0)
+                                    for (dep in comp.dependencies) {
+                                        def sel = dep.selectedComponent
+                                        if (sel == null || !visited.add(sel.id.toString())) continue
+                                        def attrs = [:]
+                                        try {
+                                            dep.variant?.attributes?.each { k, v ->
+                                                def key = (k instanceof String) ? k : k.name
+                                                attrs[key.toString()] = v == null ? '' : v.toString()
+                                            }
+                                        } catch (ignored) {}
+                                        if (sel.id instanceof org.gradle.api.artifacts.component.ProjectComponentIdentifier) {
+                                            def depPath = sel.id.projectPath
+                                            if (depPath != ':') {
+                                                // Match the resolved variant against recorded library variants.
+                                                def bt = attrs['com.android.build.api.attributes.BuildTypeAttr']
+                                                def flavorValues = attrs
+                                                    .findAll { k, v -> k.startsWith('com.android.build.api.attributes.ProductFlavor:') }
+                                                    .values().collect { it }.toSet()
+                                                def matching = libraryVariants.findAll { lib ->
+                                                    lib.path == depPath &&
+                                                        (bt == null || lib.buildType == bt) &&
+                                                        lib.flavors.toSet() == flavorValues
+                                                }
+                                                if (matching.isEmpty()) {
+                                                    // Ambiguous: include nothing rather than guess.
+                                                    logger.warn("zed-android: no exact library variant match for ${depPath} (attrs ${attrs})")
+                                                } else {
+                                                    matching.each { lib ->
+                                                        depRoots << [path: lib.path, variant: lib.variant, roots: sourceRoots(lib)]
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        queue << sel
+                                    }
+                                }
+                            } catch (Exception e) {
+                                logger.warn("zed-android: runtime classpath graph unavailable: ${e.message}")
+                            }
+                        }
+                        def payload = [
+                            module              : project.path,
+                            variant             : variantName,
+                            applicationId       : appIdProvider.get(),
+                            projectDir          : project.projectDir.absolutePath,
+                            javaSources         : sourcePaths(javaSources),
+                            kotlinSources       : sourcePaths(kotlinSources),
+                            runtimeProjectDeps  : depRoots,
+                        ]
+                        println VARIANT_MARKER + JsonOutput.toJson(payload)
+                    }
+                }
+            }
+        } as org.gradle.api.Action)
+    }
+
+    pluginManager.withPlugin('com.android.library') {
+        def androidComponents = project.extensions.getByName('androidComponents')
+        androidComponents.onVariants(androidComponents.selector().all(), { variant ->
+            def javaSources = variant.sources?.java?.all
+            def kotlinSources = variant.sources?.kotlin?.all
+            libraryVariants << [
+                path      : project.path,
+                variant   : variant.name,
+                buildType : variant.buildType,
+                flavors   : variant.productFlavors.collect { it.second },
+                javaSrc   : javaSources,
+                kotlinSrc : kotlinSources,
+                projectDir: project.projectDir.absolutePath,
+            ]
+        } as org.gradle.api.Action)
+    }
+}
+
+// Sources.all is Provider<List<Directory>> on AGP 8.7 (FixedDirectory items);
+// older AGP wraps each item in a Provider, so unwrap when present.
+List sourcePaths(Provider allProvider) {
+    try {
+        if (allProvider == null) return []
+        return allProvider.get().collect { d ->
+            (d.respondsTo('get') ? d.get() : d).asFile.absolutePath
+        }
+    } catch (Exception e) {
+        println "zed-android: warning: could not resolve source roots: ${e.message}"
+        return []
+    }
+}
+
+List sourceRoots(Map lib) {
+    def roots = []
+    roots.addAll(sourcePaths(lib.javaSrc))
+    roots.addAll(sourcePaths(lib.kotlinSrc))
+    return roots
+}
+
+gradle.projectsEvaluated { g ->
+    if (discoveryRequested) {
+        if (g.rootProject.tasks.findByName('zedAndroidTargets') != null) {
+            throw new GradleException(
+                "zed-android: the root project already defines a task named 'zedAndroidTargets'; refusing to shadow it")
+        }
+        g.rootProject.tasks.register('zedAndroidTargets') { t ->
+            t.group = 'zed-android'
+            t.description = 'zed-android: emit application/variant pairs as JSON'
+            t.doLast {
+                def snapshot = new ArrayList(appEntries)
+                snapshot.sort { a, b -> (a.module <=> b.module) ?: (a.variant <=> b.variant) }
+                println TARGETS_MARKER + JsonOutput.toJson(snapshot)
+            }
+        }
+    } else if (wantModule != null && wantVariant != null) {
+        // Exact pair check before the task graph runs; Gradle must not shorten a
+        // name into a neighbouring module's similar task.
+        def hit = appEntries.find { it.module == wantModule && it.variant == wantVariant }
+        if (hit == null) {
+            def known = appEntries.findAll { it.module == wantModule }.collect { it.variant }
+            throw new GradleException(
+                "zed-android: ${wantModule}:${wantVariant} is not a current application variant" +
+                (known.isEmpty() ? " (module has no Android application variants)" : " (variants: ${known.join(', ')})"))
+        }
+        if (wantAppId != null && hit.applicationId != wantAppId) {
+            throw new GradleException(
+                "zed-android: ${wantModule}:${wantVariant} now builds applicationId ${hit.applicationId}, expected ${wantAppId}")
+        }
+    }
+}
