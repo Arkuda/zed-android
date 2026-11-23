@@ -106,6 +106,20 @@ test("FileIndex.candidates maps sources to JVM type candidates", () => {
   }
 });
 
+test("FileIndex maps lowercase-named Kotlin files to capitalised facade classes", () => {
+  // answer.kt compiles top-level funs into example/wear/AnswerKt (capital A).
+  const { dir, javaRoot, ktRoot } = makeFixture();
+  try {
+    fs.writeFileSync(path.join(ktRoot, "dev", "pkg", "answer.kt"), "package dev.pkg\nfun answer(x: Int) = x + 1\n");
+    const index = new FileIndex({ javaSources: [javaRoot], kotlinSources: [ktRoot] });
+    const kt = index.candidates(path.join(ktRoot, "dev", "pkg", "answer.kt"));
+    assert.deepStrictEqual(kt.qtypes, ["dev/pkg/answer", "dev/pkg/answerKt", "dev/pkg/AnswerKt"]);
+    assert.strictEqual(index.sourceFor("Ldev/pkg/AnswerKt;"), path.join(ktRoot, "dev", "pkg", "answer.kt"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("FileIndex.sourceFor resolves signatures back to files (Kt facade + inner classes)", () => {
   const { dir, javaRoot, ktRoot } = makeFixture();
   try {

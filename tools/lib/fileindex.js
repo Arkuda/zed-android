@@ -48,8 +48,16 @@ class FileIndex {
       const qualified = (name) => (pkgpath ? `${pkgpath}/${name}` : name);
       qtypes.push(qualified(base));
       if (/\.kt$/i.test(file)) {
-        const kt = qualified(`${base}Kt`);
-        if (!qtypes.includes(kt)) qtypes.push(kt);
+        // top-level declarations compile into a file facade class named after the
+        // FILE with the first letter (and each _-separated word) capitalised:
+        // answer.kt -> example/wear/AnswerKt, my_utils.kt -> My_utilsKt.
+        const facades = [base];
+        const capped = base.replace(/(^|_)([a-z])/g, (_, sep2, c) => sep2 + c.toUpperCase());
+        if (capped !== base) facades.push(capped);
+        for (const f of facades) {
+          const kt = qualified(`${f}Kt`);
+          if (!qtypes.includes(kt)) qtypes.push(kt);
+        }
       }
       // Engine-relative form: /pkg/path/Base.ext with forward slashes.
       const srcfpn = `/${pkgpath ? `${pkgpath}/` : ""}${base}.java`;
@@ -79,11 +87,18 @@ class FileIndex {
       const tries = [path.join(dir, `${base}.kt`), path.join(dir, `${base}.java`)];
       if (/Kt$/.test(base)) {
         const outer = base.slice(0, -2);
-        tries.push(path.join(dir, `${outer}.kt`), path.join(dir, `${outer}.java`));
+        // AnswerKt may have been compiled from answer.kt (facade capitalisation).
+        const lowerOuter = outer.charAt(0).toLowerCase() + outer.slice(1);
+        tries.push(
+          path.join(dir, `${outer}.kt`),
+          path.join(dir, `${outer}.java`),
+          path.join(dir, `${lowerOuter}.kt`),
+          path.join(dir, `${lowerOuter}.java`),
+        );
       }
       for (const p of tries) {
         try {
-          if (fs.statSync(p).isFile()) return p;
+          if (fs.statSync(p).isFile()) return CASE_INSENSITIVE ? canonicalCase(p) : p;
         } catch {
           /* keep looking */
         }
@@ -91,6 +106,28 @@ class FileIndex {
     }
     return null;
   }
+}
+
+/** Replace each component's spelling with the on-disk one (Windows/macOS). */
+function canonicalCase(p) {
+  let cur = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    const dir = path.dirname(cur);
+    if (dir === cur) break; // root/drive reached
+    const base = path.basename(cur);
+    let entries;
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return p; // unverifiable: keep the spelling we built
+    }
+    const hit = entries.find((e) => e.toLowerCase() === base.toLowerCase());
+    if (!hit) return p;
+    tail.unshift(hit);
+    cur = dir;
+  }
+  return path.join(cur, ...tail);
 }
 
 /** rel path under root or null; separator- and platform-aware. */
